@@ -21,11 +21,14 @@ class Generator:
     processed_water_dps = []  # Water d_points that have been made into water polygons.
     all_water_dps = []  # All water d_point indexes, unsorted.
     water_edge_dps = []
+    deep_water_etched_lines = []
+    water_edge_dps_3 = []
     water_polys = []
     water_edges = []
 
     all_mountain_dps = []
     sorted_mountain_dps = []
+    inland_mountains_dps =[]
 
     hill_dps = []
     forest_dps = []
@@ -268,6 +271,37 @@ class Generator:
         self.sorted_water_dps.append(d_points)
         self.all_water_dps.extend(d_points)
 
+    def get_segment_normal_pointing_to_ref(self, p1, p2, ref_point):
+        """
+        Calculates a normalized normal vector for the segment (p1, p2)
+        that points towards the ref_point.
+        """
+        vec_seg_x = p2[0] - p1[0]
+        vec_seg_y = p2[1] - p1[1]
+
+        # Candidate normal: (-dy, dx) - this gives one of the two perpendiculars
+        candidate_normal_x = -vec_seg_y
+        candidate_normal_y = vec_seg_x
+
+        # Vector from p1 to reference point
+        vec_to_ref_x = ref_point[0] - p1[0]
+        vec_to_ref_y = ref_point[1] - p1[1]
+
+        # 2D cross product: (v1.x * v2.y) - (v1.y * v2.x)
+        # Determines if ref_point is to the "left" or "right" of the segment (p1 -> p2)
+        cross_product_val = (vec_seg_x * vec_to_ref_y) - (vec_seg_y * vec_to_ref_x)
+
+        # If ref_point is to the "right" (negative cross product), flip the normal to point inward
+        if cross_product_val < 0:
+            candidate_normal_x = -candidate_normal_x
+            candidate_normal_y = -candidate_normal_y
+
+        # Normalize the normal vector
+        length = math.sqrt(candidate_normal_x**2 + candidate_normal_y**2)
+        if length == 0:
+            return (0.0, 0.0) # Avoid division by zero, return zero vector
+        return (candidate_normal_x / length, candidate_normal_y / length)
+
     def gen_water_polygon(self, d_points):
         for d_p in d_points:
             if d_p in self.processed_water_dps:
@@ -390,17 +424,45 @@ class Generator:
             area = self.grow_area_from_point(size, start_dp_idx, avoid_depth=1)
             self.forest_dps.extend(area)
             total_used += size
+          
+    def inland_mountains(self):
+        distances = []
 
-    def gen_rivers(self, num_rivers):
+        for m_dp in self.all_mountain_dps:
+            m_point = self.delaunay.points[m_dp]
+            # find closest water edge point
+            min_dist = min(
+                vect.dist(m_point, self.delaunay.points[w_dp]) for w_dp in self.water_edge_dps
+            )
+            distances.append((m_dp, min_dist))
+
+        # sort by distance descending (furthest first)
+        distances.sort(key=lambda x: x[1], reverse=True)
+
+        # take top 50%
+        num_inland = len(distances) // 4
+        self.inland_mountain_dps = [dp for dp, _ in distances[:num_inland]]
+
+    def gen_rivers(self, num_rivers, top_k=15):
+
+        self.inland_mountains()
+
         for r in range(num_rivers):
             w_edge_dp = self.rand.choice(self.water_edge_dps)
-            min_distance = math.inf
-            m_dp_target = -1
-            for m_dp in self.all_mountain_dps:
-                dist = vect.dist(self.delaunay.points[w_edge_dp], self.delaunay.points[m_dp])
-                if dist < min_distance:
-                    m_dp_target = m_dp
-                    min_distance = dist
+
+            dists = []
+            for m_dp in self.inland_mountain_dps:
+                dist = vect.dist(self.delaunay.points[w_edge_dp],
+                                self.delaunay.points[m_dp])
+                dists.append((dist, m_dp))
+
+            # 2️⃣ Sort by ascending distance
+            dists.sort(key=lambda x: x[0])
+
+            # 3️⃣ Take the top_k closest, then randomly pick one of them
+            candidates = dists[:top_k]
+            _, m_dp_target = self.rand.choice(candidates)
+
             line_dps = self.grow_line_from_to(w_edge_dp, m_dp_target)
 
             if len(line_dps) < 2:
